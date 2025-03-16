@@ -52,7 +52,15 @@ class LeNet5(nn.Module):
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, num_classes)
         self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=1)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x):
         x = self.pool(self.relu(self.conv1(x)))
@@ -115,6 +123,7 @@ def train_model(model, trainloader, valloader, epochs=10):
 
     return train_losses, val_losses, train_accs, val_accs
 
+
 # Plot Results
 def plot_training(train_losses, val_losses, train_accs, val_accs):
     plt.figure(figsize=(12, 5))
@@ -139,14 +148,12 @@ def plot_training(train_losses, val_losses, train_accs, val_accs):
 
 
 # Train LeNet-5 Model
-if __name__ == '__main__':
+if __name__ == "__main__":
     train_losses, val_losses, train_accs, val_accs = train_model(
         model, trainloader, valloader, epochs=10
     )
 
     plot_training(train_losses, val_losses, train_accs, val_accs)
-
-
 
 
 # TODO: save weights
