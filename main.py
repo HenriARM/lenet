@@ -73,6 +73,69 @@ class LeNet5(nn.Module):
         return x  # No softmax as it's included in CrossEntropyLoss
 
 
+class LeNet5_Dropout(nn.Module):
+    def __init__(self, num_classes=10):
+        super(LeNet5_Dropout, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, kernel_size=5)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(6, 16, kernel_size=5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.dropout1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(120, 84)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc3 = nn.Linear(84, num_classes)
+        self.relu = nn.ReLU()
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = torch.flatten(x, 1)
+        x = self.dropout1(self.relu(self.fc1(x)))
+        x = self.dropout2(self.relu(self.fc2(x)))
+        x = self.fc3(x)
+        return x
+
+
+# Model Variant 2: Increase Filters + LeakyReLU
+class LeNet5_LeakyReLU(nn.Module):
+    def __init__(self, num_classes=10):
+        super(LeNet5_LeakyReLU, self).__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=5)  # Increased filters
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=5)  # Increased filters
+        self.fc1 = nn.Linear(32 * 5 * 5, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, num_classes)
+        self.leaky_relu = nn.LeakyReLU(0.1)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="leaky_relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = self.pool(self.leaky_relu(self.conv1(x)))
+        x = self.pool(self.leaky_relu(self.conv2(x)))
+        x = torch.flatten(x, 1)
+        x = self.leaky_relu(self.fc1(x))
+        x = self.leaky_relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+
 def train_model(model, device, trainloader, valloader, criterion, optimizer, epochs=10):
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
@@ -149,8 +212,16 @@ def test_model(model, device, testloader):
     print(f"Test Accuracy: {accuracy:.2f}%")
 
     cifar10_classes = [
-        "airplane", "automobile", "bird", "cat", "deer", 
-        "dog", "frog", "horse", "ship", "truck"
+        "airplane",
+        "automobile",
+        "bird",
+        "cat",
+        "deer",
+        "dog",
+        "frog",
+        "horse",
+        "ship",
+        "truck",
     ]
     plot_confusion_matrix(all_labels, all_preds, classes=cifar10_classes)
     return accuracy
@@ -166,9 +237,11 @@ def main():
     print(f"Using device: {device}")
 
     trainloader, valloader, testloader = load_data()
-    model = LeNet5().to(device)
+    # model = LeNet5().to(device)
+    # model = LeNet5_LeakyReLU().to(device)
+    model = LeNet5_Dropout().to(device)
 
-    test = True
+    test = False
     if test:
         # load model and test
         model.load_state_dict(torch.load("lenet5.pth"))
@@ -181,7 +254,10 @@ def main():
     train_losses, val_losses, train_accs, val_accs = train_model(
         model, device, trainloader, valloader, criterion, optimizer, epochs=10
     )
-    save_model(model)
+    # save_model(model)
+    # save_model(model, "lenet5_leaky.pth")
+    save_model(model, "lenet5_dropout.pth")
+
 
     plt.figure(figsize=(12, 5))
 
