@@ -7,10 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from torch.utils.data import random_split, DataLoader
 
-# Check for GPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
 
 # Define transformations
 def get_transforms():
@@ -20,28 +16,31 @@ def get_transforms():
     return transform
 
 
-# Load CIFAR-10 dataset
-transform = get_transforms()
-dataset = torchvision.datasets.CIFAR10(
-    root="./data", train=True, download=True, transform=transform
-)
-testset = torchvision.datasets.CIFAR10(
-    root="./data", train=False, download=True, transform=transform
-)
+def load_data():
+    transform = get_transforms()
+    dataset = torchvision.datasets.CIFAR10(
+        root="./data", train=True, download=True, transform=transform
+    )
+    testset = torchvision.datasets.CIFAR10(
+        root="./data", train=False, download=True, transform=transform
+    )
 
-# Split dataset into training and validation sets
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-trainset, valset = random_split(dataset, [train_size, val_size])
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    trainset, valset = random_split(dataset, [train_size, val_size])
 
-# Data Loaders
-batch_size = 32
-trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
-valloader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=2)
-testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
+    batch_size = 32
+    trainloader = DataLoader(
+        trainset, batch_size=batch_size, shuffle=True, num_workers=2
+    )
+    valloader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=2)
+    testloader = DataLoader(
+        testset, batch_size=batch_size, shuffle=False, num_workers=2
+    )
+
+    return trainloader, valloader, testloader
 
 
-# Define LeNet-5 architecture
 class LeNet5(nn.Module):
     def __init__(self, num_classes=10):
         super(LeNet5, self).__init__()
@@ -72,16 +71,7 @@ class LeNet5(nn.Module):
         return x  # No softmax as it's included in CrossEntropyLoss
 
 
-# Initialize Model
-model = LeNet5().to(device)
-
-# Loss and Optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-
-# Training Function
-def train_model(model, trainloader, valloader, epochs=10):
+def train_model(model, device, trainloader, valloader, criterion, optimizer, epochs=10):
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
 
@@ -124,8 +114,25 @@ def train_model(model, trainloader, valloader, epochs=10):
     return train_losses, val_losses, train_accs, val_accs
 
 
-# Plot Results
-def plot_training(train_losses, val_losses, train_accs, val_accs):
+def save_model(model, path="lenet5.pth"):
+    torch.save(model.state_dict(), path)
+    print(f"Model saved to {path}")
+
+
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    trainloader, valloader, testloader = load_data()
+    model = LeNet5().to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    train_losses, val_losses, train_accs, val_accs = train_model(
+        model, device, trainloader, valloader, criterion, optimizer, epochs=10
+    )
+    save_model(model)
+
     plt.figure(figsize=(12, 5))
 
     plt.subplot(1, 2, 1)
@@ -147,20 +154,8 @@ def plot_training(train_losses, val_losses, train_accs, val_accs):
     plt.show()
 
 
-# Train LeNet-5 Model
 if __name__ == "__main__":
-    train_losses, val_losses, train_accs, val_accs = train_model(
-        model, trainloader, valloader, epochs=10
-    )
-
-    plot_training(train_losses, val_losses, train_accs, val_accs)
+    main()
 
 
-# TODO: save weights
 # TODO: add testing (people got 60% on  test set)
-# TODO: why each epoch 4 times printed
-"""
-Using device: cpu
-Files already downloaded and verified
-Files already downloaded and verified
-"""
