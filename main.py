@@ -148,7 +148,11 @@ def test_model(model, device, testloader):
     accuracy = 100 * correct / total
     print(f"Test Accuracy: {accuracy:.2f}%")
 
-    plot_confusion_matrix(all_labels, all_preds)
+    cifar10_classes = [
+        "airplane", "automobile", "bird", "cat", "deer", 
+        "dog", "frog", "horse", "ship", "truck"
+    ]
+    plot_confusion_matrix(all_labels, all_preds, classes=cifar10_classes)
     return accuracy
 
 
