@@ -5,7 +5,9 @@ import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 from torch.utils.data import random_split, DataLoader
+from sklearn.metrics import confusion_matrix
 
 
 # Define transformations
@@ -31,11 +33,11 @@ def load_data():
 
     batch_size = 32
     trainloader = DataLoader(
-        trainset, batch_size=batch_size, shuffle=True, num_workers=2
+        trainset, batch_size=batch_size, shuffle=True, num_workers=8
     )
     valloader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=2)
     testloader = DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=2
+        testset, batch_size=batch_size, shuffle=False, num_workers=8
     )
 
     return trainloader, valloader, testloader
@@ -114,6 +116,42 @@ def train_model(model, device, trainloader, valloader, criterion, optimizer, epo
     return train_losses, val_losses, train_accs, val_accs
 
 
+def plot_confusion_matrix(y_true, y_pred, classes=None):
+    cm = confusion_matrix(y_true, y_pred)
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues", xticklabels=classes, yticklabels=classes
+    )
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.title("Confusion Matrix")
+    plt.savefig("confusion_matrix.png")
+
+
+def test_model(model, device, testloader):
+    model.eval()
+    correct, total = 0, 0
+    all_preds, all_labels = [], []
+
+    with torch.no_grad():
+        for images, labels in testloader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    accuracy = 100 * correct / total
+    print(f"Test Accuracy: {accuracy:.2f}%")
+
+    plot_confusion_matrix(all_labels, all_preds)
+    return accuracy
+
+
 def save_model(model, path="lenet5.pth"):
     torch.save(model.state_dict(), path)
     print(f"Model saved to {path}")
@@ -125,6 +163,14 @@ def main():
 
     trainloader, valloader, testloader = load_data()
     model = LeNet5().to(device)
+
+    test = True
+    if test:
+        # load model and test
+        model.load_state_dict(torch.load("lenet5.pth"))
+        test_model(model, device, testloader)
+        return
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
@@ -151,11 +197,8 @@ def main():
     plt.legend()
     plt.title("Training vs Validation Accuracy")
 
-    plt.show()
+    plt.savefig("training.png")
 
 
 if __name__ == "__main__":
     main()
-
-
-# TODO: add testing (people got 60% on  test set)
