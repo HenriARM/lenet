@@ -74,14 +74,18 @@ class CatDogDataset(Dataset):
         ann_path = self.ann_files[idx]
 
         image = Image.open(img_path).convert("RGB")
-        # will resize the image down to fit within the INPUT_IMG_SZxINPUT_IMG_SZ box
-        # while preserving aspect ratio, and then pad any remaining space with black (or any color you specify).
-        image = ImageOps.pad(image, (INPUT_IMG_SZ, INPUT_IMG_SZ))  # pad to 112x112
-
         width, height, objects = self.parse_annotation(ann_path)
 
+        max_dim = max(width, height)
+        pad_x = (max_dim - width) // 2
+        pad_y = (max_dim - height) // 2
+
+        padded_image = Image.new("RGB", (max_dim, max_dim), (0, 0, 0))
+        padded_image.paste(image, (pad_x, pad_y))
+
+        padded_image = padded_image.resize((INPUT_IMG_SZ, INPUT_IMG_SZ))
         if self.transform:
-            image = self.transform(image)
+            padded_image = self.transform(padded_image)
 
         target = torch.zeros((GRID_SIZE, GRID_SIZE, 7))
         cell_size_x = INPUT_IMG_SZ / GRID_SIZE
@@ -89,35 +93,42 @@ class CatDogDataset(Dataset):
 
         for obj in objects:
             label = obj["label"]
-            bbox = obj["bbox"]
+            xmin, ymin, xmax, ymax = obj["bbox"]
 
-            # Scale bbox to model input size
-            bbox = [
-                bbox[0] * INPUT_IMG_SZ / width,
-                bbox[1] * INPUT_IMG_SZ / height,
-                bbox[2] * INPUT_IMG_SZ / width,
-                bbox[3] * INPUT_IMG_SZ / height,
-            ]
+            # Shift boxes to match padding
+            xmin += pad_x
+            xmax += pad_x
+            ymin += pad_y
+            ymax += pad_y
 
-            x_center = (bbox[0] + bbox[2]) / 2
-            y_center = (bbox[1] + bbox[3]) / 2
-            box_w = bbox[2] - bbox[0]
-            box_h = bbox[3] - bbox[1]
+            # Scale boxes to resized image
+            scale_x = INPUT_IMG_SZ / max_dim
+            scale_y = INPUT_IMG_SZ / max_dim
 
-            i = int(y_center // cell_size_y)
-            j = int(x_center // cell_size_x)
+            xmin *= scale_x
+            xmax *= scale_x
+            ymin *= scale_y
+            ymax *= scale_y
 
-            x_cell = (x_center - j * cell_size_x) / cell_size_x
-            y_cell = (y_center - i * cell_size_y) / cell_size_y
+            x_center = (xmin + xmax) / 2
+            y_center = (ymin + ymax) / 2
+            box_w = xmax - xmin
+            box_h = ymax - ymin
 
-            box_w /= INPUT_IMG_SZ
-            box_h /= INPUT_IMG_SZ
+        i = int(y_center // cell_size_y)
+        j = int(x_center // cell_size_x)
 
-            target[i, j, 0:4] = torch.tensor([x_cell, y_cell, box_w, box_h])
-            target[i, j, 4] = 1.0
-            target[i, j, 5 + label] = 1.0
+        x_cell = (x_center - j * cell_size_x) / cell_size_x
+        y_cell = (y_center - i * cell_size_y) / cell_size_y
 
-        return image, target
+        box_w /= INPUT_IMG_SZ
+        box_h /= INPUT_IMG_SZ
+
+        target[i, j, 0:4] = torch.tensor([x_cell, y_cell, box_w, box_h])
+        target[i, j, 4] = 1.0
+        target[i, j, 5 + label] = 1.0
+
+        return padded_image, target
 
     def __len__(self):
         return len(self.img_files)
