@@ -124,6 +124,13 @@ def yolo_loss(pred, target):
     return nn.MSELoss()(pred, target)
 
 
+def count_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total_params}")
+    print(f"Trainable parameters: {trainable_params}")
+
+
 def train():
     transform = T.Compose([T.Resize((INPUT_IMG_SZ, INPUT_IMG_SZ)), T.ToTensor()])
     dataset = CatDogDataset(IMG_DIR, ANNOTATION_DIR, transform)
@@ -136,6 +143,8 @@ def train():
     val_loader = DataLoader(val_ds, batch_size=8)
 
     model = YOLOv1Tiny().to(device)
+    count_parameters(model)
+    exit(0)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     epochs = 10
 
