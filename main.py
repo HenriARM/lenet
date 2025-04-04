@@ -42,48 +42,67 @@ def load_data():
 
     return trainloader, valloader, testloader
 
-# def load_cifar100():
-#     transform = get_transforms()
-#     dataset = torchvision.datasets.CIFAR100(root="./data", train=True, download=True, transform=transform)
-#     testset = torchvision.datasets.CIFAR100(root="./data", train=False, download=True, transform=transform)
-    
-#     train_size = int(0.8 * len(dataset))
-#     val_size = len(dataset) - train_size
-#     trainset, valset = random_split(dataset, [train_size, val_size])
-    
-#     batch_size = 32
-#     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
-#     valloader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=2)
-#     testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
-    
-#     return trainloader, valloader, testloader
 
 def load_cifar100():
     transform = get_transforms()
-    
+
     # Define 20 selected classes from CIFAR-100
     selected_classes = [
-        "apple", "aquarium_fish", "baby", "bear", "beaver", 
-        "bicycle", "bottle", "bowl", "boy", "bridge", 
-        "bus", "butterfly", "camel", "can", "castle",
-        "caterpillar", "chair", "chimpanzee", "clock", "cloud"
+        "apple",
+        "aquarium_fish",
+        "baby",
+        "bear",
+        "beaver",
+        "bicycle",
+        "bottle",
+        "bowl",
+        "boy",
+        "bridge",
+        "bus",
+        "butterfly",
+        "camel",
+        "can",
+        "castle",
+        "caterpillar",
+        "chair",
+        "chimpanzee",
+        "clock",
+        "cloud",
     ]
-    
+
     # Get full CIFAR-100 dataset
-    full_dataset = torchvision.datasets.CIFAR100(root="./data", train=True, download=True, transform=transform)
-    test_dataset = torchvision.datasets.CIFAR100(root="./data", train=False, download=True, transform=transform)
+    full_dataset = torchvision.datasets.CIFAR100(
+        root="./data", train=True, download=True, transform=transform
+    )
+    test_dataset = torchvision.datasets.CIFAR100(
+        root="./data", train=False, download=True, transform=transform
+    )
 
     # Map class names to indices
     class_to_idx = {name: idx for idx, name in enumerate(full_dataset.classes)}
     selected_indices = [class_to_idx[cls] for cls in selected_classes]
 
     # Filter dataset to include only selected classes
-    train_subset = [(img, selected_indices.index(label)) for img, label in full_dataset if label in selected_indices]
-    test_subset = [(img, selected_indices.index(label)) for img, label in test_dataset if label in selected_indices]
+    train_subset = [
+        (img, selected_indices.index(label))
+        for img, label in full_dataset
+        if label in selected_indices
+    ]
+    test_subset = [
+        (img, selected_indices.index(label))
+        for img, label in test_dataset
+        if label in selected_indices
+    ]
 
     # Convert to PyTorch Dataset
-    trainset = torch.utils.data.TensorDataset(torch.stack([img for img, _ in train_subset]), torch.tensor([label for _, label in train_subset]))
-    testset = torch.utils.data.TensorDataset(torch.stack([img for img, _ in test_subset]), torch.tensor([label for _, label in test_subset]))
+    trainset = torch.utils.data.TensorDataset(
+        torch.stack([img for img, _ in train_subset]),
+        torch.tensor([label for _, label in train_subset]),
+    )
+    testset = torch.utils.data.TensorDataset(
+        torch.stack([img for img, _ in test_subset]),
+        torch.tensor([label for _, label in test_subset]),
+    )
 
     # Create validation set (20% of trainset)
     train_size = int(0.8 * len(trainset))
@@ -91,12 +110,15 @@ def load_cifar100():
     trainset, valset = random_split(trainset, [train_size, val_size])
 
     batch_size = 32
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
+    trainloader = DataLoader(
+        trainset, batch_size=batch_size, shuffle=True, num_workers=2
+    )
     valloader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=2)
-    testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
+    testloader = DataLoader(
+        testset, batch_size=batch_size, shuffle=False, num_workers=2
+    )
 
     return trainloader, valloader, testloader
-
 
 
 class LeNet5(nn.Module):
@@ -203,16 +225,16 @@ class LeNet5_CIFAR100(nn.Module):
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, num_classes)
         self.leaky_relu = nn.LeakyReLU(0.1)
-        
+
         self._initialize_weights()
-    
+
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity="leaky_relu")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-    
+
     def forward(self, x):
         x = self.pool(self.leaky_relu(self.conv1(x)))
         x = self.pool(self.leaky_relu(self.conv2(x)))
@@ -221,7 +243,8 @@ class LeNet5_CIFAR100(nn.Module):
         x = self.leaky_relu(self.fc2(x))
         x = self.fc3(x)
         return x
-    
+
+
 def train_model(model, device, trainloader, valloader, criterion, optimizer, epochs=10):
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
@@ -347,7 +370,6 @@ def main():
     save_model(model, "lenet5_cifar100.pth")
     # save_model(model, "lenet5_dropout.pth")
 
-
     plt.figure(figsize=(12, 5))
 
     plt.subplot(1, 2, 1)
@@ -368,6 +390,71 @@ def main():
 
     plt.savefig("training.png")
 
+    plt.show()
+
+
+def fine_tune_cifar10():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    trainloader, valloader, testloader = load_data()
+
+    model = LeNet5_CIFAR100(num_classes=20).to(device)  # Load CIFAR-100 model
+    model.load_state_dict(
+        torch.load("data/weights/lenet5_cifar100.pth", map_location=device),
+        strict=False,
+    )  # Load weights
+
+    # Modify last layer to 10 classes
+    model.fc3 = nn.Linear(84, 10).to(device)
+
+    # Reduce learning rate to half (0.0005)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.0005)
+
+    train_losses, val_losses, train_accs, val_accs = train_model(
+        model, device, trainloader, valloader, criterion, optimizer, epochs=10
+    )
+    save_model(model, "lenet5_cifar10_pretrained.pth")
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("Training vs Validation Loss")
+
+    plt.subplot(1, 2, 2)
+    plt.plot(train_accs, label="Train Accuracy")
+    plt.plot(val_accs, label="Validation Accuracy")
+    plt.xlabel("Epochs")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.title("Training vs Validation Accuracy")
+
+    plt.savefig("training.png")
+
+    plt.show()
+
 
 if __name__ == "__main__":
-    main()
+    # fine_tune_cifar10()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    trainloader, valloader, testloader = load_data()
+    # model = LeNet5_LeakyReLU().to(device)
+    # model.load_state_dict(torch.load("data/weights/lenet5_leaky.pth"))
+
+    # model = LeNet5_CIFAR100(num_classes=20).to(device)
+    # model.fc3 = nn.Linear(84, 10).to(device)
+    # model.load_state_dict(torch.load("data/weights/lenet5_cifar10_pretrained.pth"))
+
+    # model = LeNet5().to(device)
+    # model.load_state_dict(torch.load("data/weights/lenet5.pth"))
+
+    model = LeNet5_Dropout().to(device)
+    model.load_state_dict(torch.load("data/weights/lenet5_dropout.pth"))
+
+    test_model(model, device, testloader)
+
