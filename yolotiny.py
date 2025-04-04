@@ -2,11 +2,15 @@ import os
 import glob
 import torch
 import xml.etree.ElementTree as ET
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset
 import torchvision.transforms as T
-from PIL import Image
+from PIL import Image, ImageOps
 import torch.nn as nn
 import torch.optim as optim
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
 
 GRID_SIZE = 7
 INPUT_IMG_SZ = 112
@@ -14,6 +18,27 @@ IMG_DIR = "data/cat_dog_dataset/images"
 ANNOTATION_DIR = "data/cat_dog_dataset/annotations"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def stratified_split(dataset, test_size=0.2):
+    all_labels = []
+    for ann_path in dataset.ann_files:
+        tree = ET.parse(ann_path)
+        root = tree.getroot()
+        obj_name = root.find("object/name").text
+        label = dataset.label_map[obj_name]
+        all_labels.append(label)
+
+    train_indices, val_indices = train_test_split(
+        list(range(len(dataset))),
+        test_size=test_size,
+        stratify=all_labels,
+        random_state=42,
+    )
+
+    train_ds = Subset(dataset, train_indices)
+    val_ds = Subset(dataset, val_indices)
+    return train_ds, val_ds
 
 
 class CatDogDataset(Dataset):
@@ -49,6 +74,10 @@ class CatDogDataset(Dataset):
         ann_path = self.ann_files[idx]
 
         image = Image.open(img_path).convert("RGB")
+        # will resize the image down to fit within the INPUT_IMG_SZxINPUT_IMG_SZ box
+        # while preserving aspect ratio, and then pad any remaining space with black (or any color you specify).
+        image = ImageOps.pad(image, (INPUT_IMG_SZ, INPUT_IMG_SZ))  # pad to 112x112
+
         width, height, objects = self.parse_annotation(ann_path)
 
         if self.transform:
@@ -135,8 +164,64 @@ class YOLOv1Tiny(nn.Module):
         return x
 
 
-def yolo_loss(pred, target):
-    return nn.MSELoss()(pred, target)
+def iou(box1, box2):
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+
+    inter_area = max(x2 - x1, 0) * max(y2 - y1, 0)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - inter_area
+    return inter_area / union if union != 0 else 0
+
+
+def visualize_predictions(images, targets, preds, epoch):
+    os.makedirs("epoch_vis", exist_ok=True)
+    for idx in range(min(4, len(images))):
+        img = images[idx].permute(1, 2, 0).cpu().numpy()
+        fig, ax = plt.subplots(1)
+        ax.imshow(img)
+
+        for i in range(GRID_SIZE):
+            for j in range(GRID_SIZE):
+                if targets[idx][i, j, 4] > 0:
+                    x, y, w, h = targets[idx][i, j, :4].tolist()
+                    cx = (j + x) * INPUT_IMG_SZ / GRID_SIZE
+                    cy = (i + y) * INPUT_IMG_SZ / GRID_SIZE
+                    bw = w * INPUT_IMG_SZ
+                    bh = h * INPUT_IMG_SZ
+                    rect = patches.Rectangle(
+                        (cx - bw / 2, cy - bh / 2),
+                        bw,
+                        bh,
+                        linewidth=2,
+                        edgecolor="g",
+                        facecolor="none",
+                    )
+                    ax.add_patch(rect)
+
+                if preds[idx][i, j, 4] > 0.5:
+                    x, y, w, h = preds[idx][i, j, :4].tolist()
+                    cx = (j + x) * INPUT_IMG_SZ / GRID_SIZE
+                    cy = (i + y) * INPUT_IMG_SZ / GRID_SIZE
+                    bw = w * INPUT_IMG_SZ
+                    bh = h * INPUT_IMG_SZ
+                    rect = patches.Rectangle(
+                        (cx - bw / 2, cy - bh / 2),
+                        bw,
+                        bh,
+                        linewidth=2,
+                        edgecolor="r",
+                        linestyle="--",
+                        facecolor="none",
+                    )
+                    ax.add_patch(rect)
+
+        plt.axis("off")
+        plt.savefig(f"epoch_vis/epoch_{epoch}_img_{idx}.png")
+        plt.close()
 
 
 def count_parameters(model):
@@ -178,7 +263,7 @@ def train():
 
     train_len = int(0.8 * len(dataset))
     val_len = len(dataset) - train_len
-    train_ds, val_ds = random_split(dataset, [train_len, val_len])
+    train_ds, val_ds = stratified_split(dataset)
 
     train_loader = DataLoader(train_ds, batch_size=8, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=8)
@@ -186,7 +271,11 @@ def train():
     model = YOLOv1Tiny().to(device)
     count_parameters(model)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    epochs = 10
+    epochs = 100
+    patience = 5
+    best_val_loss = float("inf")
+    patience_counter = 0
+    train_losses, val_losses, val_ious = [], [], []
 
     for epoch in range(epochs):
         model.train()
@@ -204,17 +293,76 @@ def train():
 
         model.eval()
         val_loss = 0
+        all_ious = []
         with torch.no_grad():
             for imgs, targets in val_loader:
                 imgs = imgs.to(device)
                 targets = targets.to(device)
                 preds = model(imgs)
-                loss = yolo_loss(preds, targets)
-                val_loss += loss.item()
+                val_loss += yolo_loss(preds, targets).item()
+                for b in range(len(imgs)):
+                    for i in range(GRID_SIZE):
+                        for j in range(GRID_SIZE):
+                            if targets[b, i, j, 4] == 1 and preds[b, i, j, 4] > 0.5:
+                                tx, ty, tw, th = targets[b, i, j, :4]
+                                px, py, pw, ph = preds[b, i, j, :4]
+                                t_box = [
+                                    (j + tx.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    - tw.item() * INPUT_IMG_SZ / 2,
+                                    (i + ty.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    - th.item() * INPUT_IMG_SZ / 2,
+                                    (j + tx.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    + tw.item() * INPUT_IMG_SZ / 2,
+                                    (i + ty.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    + th.item() * INPUT_IMG_SZ / 2,
+                                ]
+                                p_box = [
+                                    (j + px.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    - pw.item() * INPUT_IMG_SZ / 2,
+                                    (i + py.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    - ph.item() * INPUT_IMG_SZ / 2,
+                                    (j + px.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    + pw.item() * INPUT_IMG_SZ / 2,
+                                    (i + py.item()) * INPUT_IMG_SZ / GRID_SIZE
+                                    + ph.item() * INPUT_IMG_SZ / 2,
+                                ]
+                                all_ious.append(iou(t_box, p_box))
+
+            visualize_predictions(imgs, targets, preds, epoch)
+
+        avg_train = train_loss / len(train_loader)
+        avg_val = val_loss / len(val_loader)
+        avg_iou = sum(all_ious) / len(all_ious) if all_ious else 0
+
+        train_losses.append(avg_train)
+        val_losses.append(avg_val)
+        val_ious.append(avg_iou)
 
         print(
-            f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val Loss: {val_loss/len(val_loader):.4f}"
+            f"Epoch {epoch+1} | Train Loss: {avg_train:.4f} | Val Loss: {avg_val:.4f} | Val IoU: {avg_iou:.4f}"
         )
+
+        plt.figure()
+        plt.plot(train_losses, label="Train Loss")
+        plt.plot(val_losses, label="Val Loss")
+        plt.plot(val_ious, label="Val IoU")
+        plt.legend()
+        plt.title("Training Progress")
+        plt.xlabel("Epoch")
+        plt.ylabel("Value")
+        plt.savefig(f"training_progress_epoch_{epoch+1}.png")
+        plt.close()
+
+        if avg_val < best_val_loss:
+            best_val_loss = avg_val
+            patience_counter = 0
+            torch.save(model.state_dict(), "cat_dog_detector.pth")
+            print("Model saved (new best)")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered.")
+                break
 
     torch.save(model.state_dict(), "cat_dog_detector.pth")
     print("Model saved to cat_dog_detector.pth")
