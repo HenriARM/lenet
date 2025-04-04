@@ -8,6 +8,7 @@ from PIL import Image
 import torch.nn as nn
 import torch.optim as optim
 
+GRID_SIZE = 7
 INPUT_IMG_SZ = 112
 IMG_DIR = "data/cat_dog_dataset/images"
 ANNOTATION_DIR = "data/cat_dog_dataset/annotations"
@@ -43,39 +44,49 @@ class CatDogDataset(Dataset):
 
         return width, height, objects
 
-    def __len__(self):
-        return len(self.img_files)
-
     def __getitem__(self, idx):
         img_path = self.img_files[idx]
         ann_path = self.ann_files[idx]
 
         image = Image.open(img_path).convert("RGB")
         width, height, objects = self.parse_annotation(ann_path)
-        # TODO: tmp``
-        label = objects[0]["label"] if objects else -1
-        bbox = objects[0]["bbox"] if objects else [0, 0, 0, 0]
-
-        # Scale bounding boxes
-        scaler_x, scaler_y = width / INPUT_IMG_SZ, height / INPUT_IMG_SZ
-        bbox = [
-            bbox[0] / scaler_x,
-            bbox[1] / scaler_y,
-            bbox[2] / scaler_x,
-            bbox[3] / scaler_y,
-        ]
 
         if self.transform:
             image = self.transform(image)
 
-        # Dummy YOLO target: [x, y, w, h, obj, class0, class1]
-        x_center = (bbox[0] + bbox[2]) / 2 / INPUT_IMG_SZ
-        y_center = (bbox[1] + bbox[3]) / 2 / INPUT_IMG_SZ
-        box_w = (bbox[2] - bbox[0]) / INPUT_IMG_SZ
-        box_h = (bbox[3] - bbox[1]) / INPUT_IMG_SZ
-        obj = 1
-        class_vec = [1, 0] if label == 0 else [0, 1]
-        target = torch.tensor([x_center, y_center, box_w, box_h, obj] + class_vec)
+        target = torch.zeros((GRID_SIZE, GRID_SIZE, 7))
+        cell_size_x = INPUT_IMG_SZ / GRID_SIZE
+        cell_size_y = INPUT_IMG_SZ / GRID_SIZE
+
+        for obj in objects:
+            label = obj["label"]
+            bbox = obj["bbox"]
+
+            # Scale bbox to model input size
+            bbox = [
+                bbox[0] * INPUT_IMG_SZ / width,
+                bbox[1] * INPUT_IMG_SZ / height,
+                bbox[2] * INPUT_IMG_SZ / width,
+                bbox[3] * INPUT_IMG_SZ / height,
+            ]
+
+            x_center = (bbox[0] + bbox[2]) / 2
+            y_center = (bbox[1] + bbox[3]) / 2
+            box_w = bbox[2] - bbox[0]
+            box_h = bbox[3] - bbox[1]
+
+            i = int(y_center // cell_size_y)
+            j = int(x_center // cell_size_x)
+
+            x_cell = (x_center - j * cell_size_x) / cell_size_x
+            y_cell = (y_center - i * cell_size_y) / cell_size_y
+
+            box_w /= INPUT_IMG_SZ
+            box_h /= INPUT_IMG_SZ
+
+            target[i, j, 0:4] = torch.tensor([x_cell, y_cell, box_w, box_h])
+            target[i, j, 4] = 1.0
+            target[i, j, 5 + label] = 1.0
 
         return image, target
 
@@ -87,23 +98,23 @@ class YOLOv1Tiny(nn.Module):
     def __init__(self):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 16, 3, 1, 1),
+            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(16, 32, 3, 1, 1),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(32, 64, 3, 1, 1),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(64, 64, 3, 1, 1),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(64, 32, 3, 1, 1),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+            nn.Conv2d(64, 32, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
         )
@@ -112,12 +123,16 @@ class YOLOv1Tiny(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(32 * 7 * 7, 512),
             nn.ReLU(),
-            nn.Linear(512, 7),  # [x, y, w, h, obj, class0, class1]
+            nn.Linear(512, 343),  # 7x7 grid * 7 values per cell
+            nn.Sigmoid(),  # squash to [0, 1]
         )
 
     def forward(self, x):
         x = self.features(x)
-        return self.classifier(x)
+        x = self.classifier(x)
+        x = x.view(-1, GRID_SIZE, GRID_SIZE, 7)
+        # print("Output shape:", x.shape)
+        return x
 
 
 def yolo_loss(pred, target):
@@ -129,6 +144,32 @@ def count_parameters(model):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params}")
     print(f"Trainable parameters: {trainable_params}")
+
+
+def yolo_loss(pred, target, lambda_coord=5, lambda_noobj=0.5):
+    obj_mask = target[..., 4] == 1
+    noobj_mask = target[..., 4] == 0
+    coord_loss = (
+        lambda_coord
+        * ((pred[..., 0:2][obj_mask] - target[..., 0:2][obj_mask]) ** 2).sum()
+    )
+    wh_loss = (
+        lambda_coord
+        * (
+            (
+                torch.sqrt(pred[..., 2:4][obj_mask] + 1e-6)
+                - torch.sqrt(target[..., 2:4][obj_mask] + 1e-6)
+            )
+            ** 2
+        ).sum()
+    )
+    obj_loss = ((pred[..., 4][obj_mask] - target[..., 4][obj_mask]) ** 2).sum()
+    noobj_loss = (
+        lambda_noobj
+        * ((pred[..., 4][noobj_mask] - target[..., 4][noobj_mask]) ** 2).sum()
+    )
+    class_loss = ((pred[..., 5:][obj_mask] - target[..., 5:][obj_mask]) ** 2).sum()
+    return coord_loss + wh_loss + obj_loss + noobj_loss + class_loss
 
 
 def train():
@@ -144,7 +185,6 @@ def train():
 
     model = YOLOv1Tiny().to(device)
     count_parameters(model)
-    exit(0)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     epochs = 10
 
